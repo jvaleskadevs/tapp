@@ -30,7 +30,7 @@ export const COMMON_TOKENS = {
   JESSE: {
     symbol: "JESSE",
     name: "jesse",
-    address: "0x5FdA5C9b1edE7b40d9bF9a1F7A8dC4A5e5d4e4d4",
+    address: "0x50F88fe97f72CD3E75b9Eb4f747F59BcEBA80d59",
     decimals: 18,
     image: "https://coin-images.coingecko.com/coins/images/70790/large/jesse.png?1763769339",
     color: "#FF6B6B",
@@ -38,7 +38,7 @@ export const COMMON_TOKENS = {
   DEGEN: {
     symbol: "DEGEN",
     name: "Degen",
-    address: "0x4ed4E862860beD51a9770B96d8eA7f30ab6Bb88a",
+    address: "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
     decimals: 18,
     image: "https://coin-images.coingecko.com/coins/images/34515/large/android-chrome-512x512.png?1706198225",
     color: "#A855F7",
