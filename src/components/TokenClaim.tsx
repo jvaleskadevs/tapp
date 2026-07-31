@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { parseUnits, formatUnits, erc20Abi } from "viem";
+import { parseUnits, formatUnits, erc20Abi, maxUint256 } from "viem";
 import { 
   ClipboardPaste, 
   Check, 
@@ -28,16 +28,59 @@ interface TokenClaimProps {
   handleTab: (tab: "approve" | "claim") => void;
 }
 
+// Helper to format large numbers with truncation
+function formatTokenAmount(amount: bigint, decimals: number, maxLength: number = 12): string {
+  if (amount === BigInt(0)) return "0";
+  
+  const formatted = formatUnits(amount, decimals);
+  
+  // Check if it's max uint256 (unlimited approval)
+  if (amount >= maxUint256 / BigInt(2)) {
+    return "Max";
+  }
+  
+  // Truncate if too long
+  if (formatted.length > maxLength) {
+    const num = parseFloat(formatted);
+    if (num >= 1_000_000_000) {
+      return (num / 1_000_000_000).toFixed(2) + "B";
+    }
+    if (num >= 1_000_000) {
+      return (num / 1_000_000).toFixed(2) + "M";
+    }
+    if (num >= 1_000) {
+      return (num / 1_000).toFixed(2) + "K";
+    }
+    return num.toExponential(4);
+  }
+  
+  // Remove trailing zeros
+  return formatted.replace(/\.?0+$/, "");
+}
+
 export function TokenClaim({ handleTab }: TokenClaimProps) {
   const { address, isConnected, chainId } = useAccount();
-  const [fromAddress, setFromAddress] = useState(""); // The address that approved tokens to us
+  const [fromAddress, setFromAddress] = useState("");
   const [tokenAddress, setTokenAddress] = useState("");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<TransactionStatus>("idle");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
-  // Read allowance to check how much was approved
+  // Read token decimals
+  const { data: tokenDecimals } = useReadContract({
+    address: tokenAddress as `0x${string}`,
+    abi: erc20Abi,
+    functionName: "decimals",
+    query: {
+      enabled: isConnected && isValidEthereumAddress(tokenAddress)
+    }
+  });
+
+  // Default to 18 if not loaded yet
+  const decimals = tokenDecimals ?? 18;
+
+  // Read allowance
   const { data: allowanceData, refetch: refetchAllowance } = useReadContract({
     address: tokenAddress as `0x${string}`,
     abi: erc20Abi,
@@ -86,7 +129,6 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
     },
   });
   
-  // Handle transaction status changes
   useEffect(() => {
     if (receipt) {
       setStatus("success");
@@ -94,7 +136,6 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
     }
   }, [receipt, refetchAllowance]);
 
-  // Handle errors with a separate effect
   useEffect(() => {
     if (txHash && !isConfirming && !receipt) {
       setStatus("error");
@@ -147,8 +188,7 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
       return;
     }
 
-    // Check if allowance is sufficient
-    const claimAmount = parseUnits(amount, 18);
+    const claimAmount = parseUnits(amount, decimals);
     if (allowanceData && allowanceData < claimAmount) {
       setErrorMessage("Insufficient allowance. The from address hasn't approved enough tokens.");
       setStatus("error");
@@ -160,7 +200,6 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
     setTxHash(null);
 
     try {
-      // transferFrom(from, to, amount) - to is the connected wallet (msg.sender)
       writeContract({
         address: tokenAddress as `0x${string}`,
         abi: erc20Abi,
@@ -181,13 +220,23 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
     setStatus("idle");
     setTxHash(null);
     setErrorMessage("");
+    setAmount("");
   };
 
   const isLoading = isWritePending || isConfirming;
 
-  // Format allowance for display
-  const formattedAllowance = allowanceData ? formatUnits(allowanceData, 18) : "0";
-  const formattedFromBalance = fromBalanceData ? formatUnits(fromBalanceData, 18) : "0";
+  // Format values using actual decimals
+  const formattedAllowance = useMemo(() => 
+    formatTokenAmount(allowanceData ?? BigInt(0), decimals),
+    [allowanceData, decimals]
+  );
+
+  const formattedFromBalance = useMemo(() => 
+    formatTokenAmount(fromBalanceData ?? BigInt(0), decimals),
+    [fromBalanceData, decimals]
+  );
+
+  const isUnlimitedAllowance = allowanceData && allowanceData >= maxUint256 / BigInt(2);
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -306,15 +355,34 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
                 <div className="p-4 rounded-lg bg-white/5 border border-white/10">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-sm text-white/60">Approved Allowance:</span>
-                    <span className="text-sm font-mono text-green-400">
-                      {formattedAllowance}
-                    </span>
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <span 
+                        className={`text-sm font-mono truncate max-w-[150px] ${
+                          isUnlimitedAllowance ? "text-purple-400 font-bold" : "text-green-400"
+                        }`}
+                        title={allowanceData ? formatUnits(allowanceData, decimals) : "0"}
+                      >
+                        {formattedAllowance}
+                      </span>
+                      {isUnlimitedAllowance && (
+                        <span className="text-xs text-purple-400/80 flex-shrink-0">
+                          (Unlimited)
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-white/60">From Address Balance:</span>
-                    <span className="text-sm font-mono text-white/80">
+                    <span 
+                      className="text-sm font-mono text-white/80 truncate max-w-[150px]"
+                      title={fromBalanceData ? formatUnits(fromBalanceData, decimals) : "0"}
+                    >
                       {formattedFromBalance}
                     </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/10">
+                    <span className="text-xs text-white/40">Token Decimals:</span>
+                    <span className="text-xs font-mono text-white/60">{decimals}</span>
                   </div>
                 </div>
               )}
@@ -327,19 +395,27 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
                 <div className="relative">
                   <Input
                     type="number"
+                    step={`0.${'0'.repeat(Math.max(0, decimals - 1))}1`}
                     placeholder="0.0"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
                     className="pr-24"
-                  />                 
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setAmount(formattedAllowance)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/40 hover:text-white"
-                    >
-                      Max
-                    </Button>          
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      if (isUnlimitedAllowance && fromBalanceData) {
+                        // If unlimited, max is the from address balance
+                        setAmount(formatUnits(fromBalanceData, decimals));
+                      } else if (allowanceData) {
+                        setAmount(formatUnits(allowanceData, decimals));
+                      }
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/40 hover:text-white"
+                  >
+                    Max
+                  </Button>
                 </div>
                 <p className="text-xs text-white/40">
                   Enter the amount you want to claim (up to the approved allowance)
@@ -349,29 +425,29 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
               {/* Claim Visualization */}
               {isValidEthereumAddress(fromAddress) && address && (
                 <div className="flex items-center justify-center gap-3 p-4 rounded-lg bg-white/5 border border-white/10">
-                  <div className="flex flex-col items-center">
+                  <div className="flex flex-col items-center min-w-0">
                     <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center">
                       <Wallet className="w-5 h-5 text-white/60" />
                     </div>
                     <span className="text-xs text-white/40 mt-1">From</span>
-                    <span className="text-xs font-mono text-white/60">
+                    <span className="text-xs font-mono text-white/60 truncate max-w-[80px]">
                       {truncateAddress(fromAddress)}
                     </span>
                   </div>
                   
-                  <div className="flex flex-col items-center px-4">
-                    <ArrowRight className="w-5 h-5 text-green-400" />
-                    <span className="text-xs text-green-400 mt-1">
+                  <div className="flex flex-col items-center px-2">
+                    <ArrowRight className="w-5 h-5 text-green-400 flex-shrink-0" />
+                    <span className="text-xs text-green-400 mt-1 truncate max-w-[100px] text-center">
                       {amount || "0"} tokens
                     </span>
                   </div>
                   
-                  <div className="flex flex-col items-center">
+                  <div className="flex flex-col items-center min-w-0">
                     <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center">
                       <Wallet className="w-5 h-5 text-green-400" />
                     </div>
                     <span className="text-xs text-white/40 mt-1">To (You)</span>
-                    <span className="text-xs font-mono text-white/60">
+                    <span className="text-xs font-mono text-white/60 truncate max-w-[80px]">
                       {truncateAddress(address)}
                     </span>
                   </div>
@@ -506,9 +582,9 @@ export function TokenClaim({ handleTab }: TokenClaimProps) {
           <div className="text-sm text-white/70">
             <p className="font-medium text-white/90 mb-1">How It Works</p>
             <p>
-              The claim section uses <code className="text-blue-300">transferFrom</code> to claim tokens 
+              This component uses <code className="text-blue-300">transferFrom</code> to claim tokens 
               that were previously approved to your address. The "from" address must have called 
-              <code className="text-blue-300"> approve(yourAddress, amount)</code> before you can claim.
+              <code className="text-blue-300">approve(yourAddress, amount)</code> before you can claim.
             </p>
           </div>
         </div>
