@@ -1,40 +1,70 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
+import { useState, useEffect } from "react";
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { parseUnits, erc20Abi } from "viem";
+import { parseUnits, formatUnits, erc20Abi } from "viem";
 import { 
   ClipboardPaste, 
   Check, 
   AlertCircle, 
   Loader2, 
   ExternalLink,
-  Shield,
+  Gift,
   Sparkles,
-  Gift
+  Wallet,
+  ArrowRight
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { TokenImage } from "./TokenImage";
-import { COMMON_TOKENS, MAX_APPROVAL_AMOUNT, BASE_CHAIN_ID } from "@/lib/constants";
+import { COMMON_TOKENS, BASE_CHAIN_ID } from "@/lib/constants";
 import { isValidEthereumAddress, truncateAddress } from "@/lib/utils";
 
 type TransactionStatus = "idle" | "pending" | "success" | "error";
 
-interface TokenApprovalProps {
+interface TokenClaimProps {
   handleTab: (tab: "approve" | "claim") => void;
 }
 
-export function TokenApproval({ handleTab }: TokenApprovalProps) {
+export function TokenClaim({ handleTab }: TokenClaimProps) {
   const { address, isConnected, chainId } = useAccount();
+  const [fromAddress, setFromAddress] = useState(""); // The address that approved tokens to us
   const [tokenAddress, setTokenAddress] = useState("");
-  const [spenderAddress, setSpenderAddress] = useState("");
   const [amount, setAmount] = useState("");
   const [status, setStatus] = useState<TransactionStatus>("idle");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+
+  // Read allowance to check how much was approved
+  const { data: allowanceData, refetch: refetchAllowance } = useReadContract({
+    address: tokenAddress as `0x${string}`,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: fromAddress && address 
+      ? [fromAddress as `0x${string}`, address as `0x${string}`] 
+      : undefined,
+    query: {
+      enabled: isConnected && 
+               isValidEthereumAddress(tokenAddress) && 
+               isValidEthereumAddress(fromAddress) && 
+               !!address
+    }
+  });
+
+  // Read token balance of the from address
+  const { data: fromBalanceData } = useReadContract({
+    address: tokenAddress as `0x${string}`,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: fromAddress ? [fromAddress as `0x${string}`] : undefined,
+    query: {
+      enabled: isConnected && 
+               isValidEthereumAddress(tokenAddress) && 
+               isValidEthereumAddress(fromAddress)
+    }
+  });
 
   const { writeContract, isPending: isWritePending } = useWriteContract({
     mutation: {
@@ -50,7 +80,7 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
   });
 
   const { data: receipt, isLoading: isConfirming } = useWaitForTransactionReceipt({
-    hash: txHash as `0x${string}`, //`
+    hash: txHash as `0x${string}`,
     query: {
       enabled: !!txHash
     },
@@ -60,13 +90,13 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
   useEffect(() => {
     if (receipt) {
       setStatus("success");
+      refetchAllowance();
     }
-  }, [receipt]);
+  }, [receipt, refetchAllowance]);
 
   // Handle errors with a separate effect
   useEffect(() => {
     if (txHash && !isConfirming && !receipt) {
-      // Transaction failed or reverted
       setStatus("error");
       setErrorMessage("Transaction failed to confirm");
     }
@@ -86,7 +116,7 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
     setTokenAddress(token.address);
   };
 
-  const handleApprove = async () => {
+  const handleClaim = async () => {
     if (!isConnected) {
       setErrorMessage("Please connect your wallet first");
       setStatus("error");
@@ -105,8 +135,22 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
       return;
     }
 
-    if (!isValidEthereumAddress(spenderAddress)) {
-      setErrorMessage("Please enter a valid spender address");
+    if (!isValidEthereumAddress(fromAddress)) {
+      setErrorMessage("Please enter a valid from address");
+      setStatus("error");
+      return;
+    }
+
+    if (!amount || amount === "") {
+      setErrorMessage("Please enter an amount to claim");
+      setStatus("error");
+      return;
+    }
+
+    // Check if allowance is sufficient
+    const claimAmount = parseUnits(amount, 18);
+    if (allowanceData && allowanceData < claimAmount) {
+      setErrorMessage("Insufficient allowance. The from address hasn't approved enough tokens.");
       setStatus("error");
       return;
     }
@@ -116,15 +160,16 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
     setTxHash(null);
 
     try {
-      const approvalAmount = amount && amount !== "" 
-        ? parseUnits(amount, 18) 
-        : MAX_APPROVAL_AMOUNT;
-
+      // transferFrom(from, to, amount) - to is the connected wallet (msg.sender)
       writeContract({
         address: tokenAddress as `0x${string}`,
         abi: erc20Abi,
-        functionName: "approve",
-        args: [spenderAddress as `0x${string}`, approvalAmount],
+        functionName: "transferFrom",
+        args: [
+          fromAddress as `0x${string}`, 
+          address as `0x${string}`, 
+          claimAmount
+        ],
       });
     } catch (error) {
       setStatus("error");
@@ -139,6 +184,10 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
   };
 
   const isLoading = isWritePending || isConfirming;
+
+  // Format allowance for display
+  const formattedAllowance = allowanceData ? formatUnits(allowanceData, 18) : "0";
+  const formattedFromBalance = fromBalanceData ? formatUnits(fromBalanceData, 18) : "0";
 
   return (
     <div className="w-full max-w-xl mx-auto">
@@ -171,16 +220,16 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
 
       {/* Main Card */}
       <Card className="overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 via-transparent to-blue-500/10 pointer-events-none" />
+        <div className="absolute inset-0 bg-gradient-to-br from-green-500/10 via-transparent to-emerald-500/10 pointer-events-none" />
         
         <CardHeader className="relative">
           <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg shadow-purple-500/30">
-              <Shield className="w-5 h-5 text-white" />
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-green-500 to-emerald-500 flex items-center justify-center shadow-lg shadow-green-500/30">
+              <Gift className="w-5 h-5 text-white" />
             </div>
             <div>
-              <CardTitle className="text-white">Token Approval</CardTitle>
-              <CardDescription>Approve tokens for spending or recovery</CardDescription>
+              <CardTitle className="text-white">Claim Approved Tokens</CardTitle>
+              <CardDescription>Claim tokens that were approved to your address</CardDescription>
             </div>
           </div>
         </CardHeader>
@@ -188,7 +237,7 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
         <CardContent className="space-y-5 relative">
           {!isConnected ? (
             <div className="text-center py-8">
-              <p className="text-white/60 mb-4">Connect your wallet to approve tokens</p>
+              <p className="text-white/60 mb-4">Connect your wallet to claim tokens</p>
               <ConnectButton />
             </div>
           ) : (
@@ -220,11 +269,11 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
                 </div>
               </div>
 
-              {/* Spender Address Input */}
+              {/* From Address Input */}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-white/80 flex items-center gap-2">
-                  Spender Address
-                  {spenderAddress && isValidEthereumAddress(spenderAddress) && (
+                  From Address
+                  {fromAddress && isValidEthereumAddress(fromAddress) && (
                     <span className="text-xs text-green-400 flex items-center gap-1">
                       <Check className="w-3 h-3" /> Valid
                     </span>
@@ -232,13 +281,13 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
                 </label>
                 <div className="relative group">
                   <Input
-                    placeholder="0x..."
-                    value={spenderAddress}
-                    onChange={(e) => setSpenderAddress(e.target.value)}
+                    placeholder="0x... (the address that approved tokens to you)"
+                    value={fromAddress}
+                    onChange={(e) => setFromAddress(e.target.value)}
                     className="pr-12 font-mono text-sm"
                   />
                   <button
-                    onClick={() => handlePaste(setSpenderAddress)}
+                    onClick={() => handlePaste(setFromAddress)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-all duration-200"
                     title="Paste from clipboard"
                   >
@@ -246,36 +295,88 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
                   </button>
                 </div>
                 <p className="text-xs text-white/40">
-                  The address that will be allowed to spend your tokens
+                  The address that previously approved tokens to your wallet
                 </p>
               </div>
+
+              {/* Allowance Info */}
+              {isValidEthereumAddress(tokenAddress) && 
+               isValidEthereumAddress(fromAddress) && 
+               address && (
+                <div className="p-4 rounded-lg bg-white/5 border border-white/10">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm text-white/60">Approved Allowance:</span>
+                    <span className="text-sm font-mono text-green-400">
+                      {formattedAllowance}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-white/60">From Address Balance:</span>
+                    <span className="text-sm font-mono text-white/80">
+                      {formattedFromBalance}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Amount Input */}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-white/80">
-                  Amount (optional)
+                  Amount to Claim
                 </label>
                 <div className="relative">
                   <Input
                     type="number"
-                    placeholder="Leave empty for unlimited approval"
+                    placeholder="0.0"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
                     className="pr-24"
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setAmount("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/40 hover:text-white"
-                  >
-                    Unlimited
-                  </Button>
+                  />                 
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setAmount(formattedAllowance)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-white/40 hover:text-white"
+                    >
+                      Max
+                    </Button>          
                 </div>
                 <p className="text-xs text-white/40">
-                  Leave empty to approve maximum amount (unlimited)
+                  Enter the amount you want to claim (up to the approved allowance)
                 </p>
               </div>
+
+              {/* Claim Visualization */}
+              {isValidEthereumAddress(fromAddress) && address && (
+                <div className="flex items-center justify-center gap-3 p-4 rounded-lg bg-white/5 border border-white/10">
+                  <div className="flex flex-col items-center">
+                    <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center">
+                      <Wallet className="w-5 h-5 text-white/60" />
+                    </div>
+                    <span className="text-xs text-white/40 mt-1">From</span>
+                    <span className="text-xs font-mono text-white/60">
+                      {truncateAddress(fromAddress)}
+                    </span>
+                  </div>
+                  
+                  <div className="flex flex-col items-center px-4">
+                    <ArrowRight className="w-5 h-5 text-green-400" />
+                    <span className="text-xs text-green-400 mt-1">
+                      {amount || "0"} tokens
+                    </span>
+                  </div>
+                  
+                  <div className="flex flex-col items-center">
+                    <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center">
+                      <Wallet className="w-5 h-5 text-green-400" />
+                    </div>
+                    <span className="text-xs text-white/40 mt-1">To (You)</span>
+                    <span className="text-xs font-mono text-white/60">
+                      {truncateAddress(address)}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Status Messages */}
               {status === "success" && (
@@ -284,10 +385,10 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
                     <Check className="w-5 h-5 text-green-400 mt-0.5" />
                     <div className="flex-1">
                       <p className="text-sm font-medium text-green-300">
-                        Approval Successful!
+                        Tokens Claimed Successfully!
                       </p>
                       <p className="text-xs text-green-400/80 mt-1">
-                        Tokens have been approved for spending
+                        The tokens have been transferred to your wallet
                       </p>
                       {txHash && (
                         <a
@@ -344,13 +445,13 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
                     className="flex-1"
                     variant="default"
                   >
-                    Approve Another Token
+                    Claim More Tokens
                   </Button>
                 ) : (
                   <>
                     <Button
-                      onClick={handleApprove}
-                      disabled={isLoading || !tokenAddress || !spenderAddress}
+                      onClick={handleClaim}
+                      disabled={isLoading || !tokenAddress || !fromAddress || !amount}
                       className="flex-1"
                       variant="glow"
                     >
@@ -361,8 +462,8 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
                         </>
                       ) : (
                         <>
-                          <Shield className="w-4 h-4 mr-2" />
-                          Approve Tokens
+                          <Gift className="w-4 h-4 mr-2" />
+                          Claim Tokens
                         </>
                       )}
                     </Button>
@@ -375,16 +476,14 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
                 )}
               </div>
 
+              {/* Navigation */}
               <div className="flex justify-center pt-2">
                 <Button
-                  onClick={() => handleTab("claim")}
+                  onClick={() => handleTab("approve")}
                   className="text-sm" 
                   variant="ghost"                 
                 >
-                  <>
-                    <Gift className="w-4 h-4 mr-2" />
-                    Claim approved tokens
-                  </> 
+                  ← Back to Token Approval
                 </Button>
               </div>
 
@@ -400,15 +499,16 @@ export function TokenApproval({ handleTab }: TokenApprovalProps) {
         </CardContent>
       </Card>
       
-      {/* Security Notice */}
-      <div className="mt-6 p-4 rounded-lg glass border border-yellow-500/20">
+      {/* Info Notice */}
+      <div className="mt-6 p-4 rounded-lg glass border border-blue-500/20">
         <div className="flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-yellow-400 mt-0.5 flex-shrink-0" />
+          <Gift className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" />
           <div className="text-sm text-white/70">
-            <p className="font-medium text-white/90 mb-1">Security Notice</p>
+            <p className="font-medium text-white/90 mb-1">How It Works</p>
             <p>
-              Only approve tokens to trusted addresses. Unlimited approvals carry risks. 
-              Always verify the spender address before approving.
+              The claim section uses <code className="text-blue-300">transferFrom</code> to claim tokens 
+              that were previously approved to your address. The "from" address must have called 
+              <code className="text-blue-300"> approve(yourAddress, amount)</code> before you can claim.
             </p>
           </div>
         </div>

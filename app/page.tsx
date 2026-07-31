@@ -1,6 +1,12 @@
+"use client";
+
+import { useState } from "react";
 import { TokenApproval } from "@/components/TokenApproval";
+import { TokenClaim } from "@/components/TokenClaim";
 
 export default function Home() {
+  const [tab, setTab] = useState<"approve" | "claim">("approve");
+  
   return (
     <main className="min-h-screen relative overflow-hidden">
       {/* Background Effects */}
@@ -41,7 +47,12 @@ export default function Home() {
 
         {/* Main Component */}
         <div className="flex-1 flex items-center justify-center">
-          <TokenApproval />
+          
+          { tab == "approve" ? (
+            <TokenApproval handleTab={setTab} />
+          ) : (
+            <TokenClaim handleTab={setTab} />
+          )}
         </div>
 
         {/* Footer */}
